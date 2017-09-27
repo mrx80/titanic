@@ -8,27 +8,16 @@ from datetime import datetime
 import tensorflow as tf
 from tensorflow.python.ops.variables import global_variables_initializer
 
-
-def mungecat(indf,var):
-    h = {}
-    idx = 0
-     
-    #find uniques and map to a number
-    for k in indf[var]:
-        if not k in h:
-            h[k] = idx
-            idx+=1
-    
-    indf[var] = indf[var].map(lambda a: h[a])
-
-
 #Computes and returns:
 #x_train, x_test, y_train, y_test
+#x,y_train are the test set
+#x,y_test are the holdout set aka validation set
+#to try to avoid overfitting, we generate a random train/test split each time
 def get_data():
         
-    df = pd.read_csv('titanic_train.csv')
+    df = pd.read_csv('titanic_train.csv') #from kaggle
     
-    #sanitize age and sex - fill out missing data, convert strings to zeros
+    #sanitize age and sex - fill out missing data
     femalemed = df[df['Sex'] == 'female']['Age'].median()
     malemed = df[df['Sex'] == 'male']['Age'].median()
     df['Age'] = df['Age'].replace(df[(df['Sex']=='male') & (df['Age'].isnull())]['Age'], malemed)
@@ -36,9 +25,14 @@ def get_data():
     
     df['fam'] = df['SibSp'] + df['Parch']
     
-    #Distinguish between continuous and categorical vars
+    #These are the features we care about
     features = ['Pclass', 'Sex', 'Age', 'Fare', 'fam', 'Embarked']
+    
+    
+    #Categorical vars - we'll eventually one hot encode them
     catvars = ['Pclass', 'Sex', 'Embarked']
+    
+    #continuous variables - could be a number
     contvars = list(features)
     [contvars.remove(x) for x in catvars]
     
@@ -46,25 +40,22 @@ def get_data():
     y = df['Survived']
     
     for var in catvars:
+        #replace a column containing a categorical var with N columns
+        #containing its one hot encoding. Clearly, N = num of categories
         X = X.join(pd.get_dummies(X[var]))
         X = X.drop(var, axis=1)
     
+    #scale continuous vars to a gaussian distribution
     scaler = StandardScaler()
     X[contvars] = scaler.fit_transform(X[contvars].values)
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
      
-    #process categorical vars
-    #[mungecat(X_train,var) for var in catvars]
-    #[mungecat(X_test,var) for var in catvars]
-    
-    #l = len(X_test)
-    #X_test = X_test.reshape(l,6)
-    #y_test = y_test.reshape(l,1)
-
+    #Reshape Y - it's of shape (N,), tensorflow expects (N,1)
     return X_train.values, y_train.values.reshape(len(y_train),1), X_test.values, y_test.values.reshape(len(y_test),1)
 
 
+#Batch helper function - returns batches of data for training
 def train_next_batch(xt,yt,i):
     
     sz = xt.shape[0]
@@ -85,6 +76,8 @@ def train_next_batch(xt,yt,i):
     by = by.reshape(step,1)
     return bx,by
 
+#Helper function for decaying learning rate
+#We could theoretically encode this in tensorflow too
 def getlr(maxlr,i):
     minlr = maxlr/30.0
     decay_speed = 2000.0
@@ -94,12 +87,10 @@ def getlr(maxlr,i):
 #returns weights and biases tensors, given input dims
 def wbhelper2(a,b):
     W = tf.Variable(tf.truncated_normal([a,b], stddev=0.1))
-    #b = tf.Variable(tf.constant(0.1,shape=[cout]))
     bi = tf.Variable(tf.ones([b])/10)
-    #bi = tf.constant(0.1, tf.float32, [b])
     return W,bi
 
-
+#Batch normalization function - THIS ONE PERFORMS WORSE!!!!
 #input: logits of a layer (pre-activation)
 #returns: batch-normalized logits, intended to be fed into activation function 
 def mybn(Yl,is_test,offset,iteration):
@@ -116,9 +107,15 @@ def mybn(Yl,is_test,offset,iteration):
     
     return Ybn,uma
 
+#Dummy function that doesn't to batch norm - for ease of parametrization
 def nobn(Yl,is_test,offset,iteration):
     return Yl, tf.no_op()
 
+#Main function that implements a 3 layer fully connected neural network to fit input data
+#xtr,ytr = training X and Y
+#xts,yts = ditto for test
+#M1, M2 are middle layer sizes
+#bnf = batch norm function (could use a dummy batch norm here too to test without batch norm
 def nn_sol(xtr,ytr,xts,yts,numepochs,trainpk,alpha,M1,M2,bnf):
     numiters = numepochs*xtr.shape[0]
     M0 = xtr.shape[1]   #works out of the box on 2-D arrays of input features
@@ -185,6 +182,8 @@ def nn_sol(xtr,ytr,xts,yts,numepochs,trainpk,alpha,M1,M2,bnf):
     
     return hal[0]
 
+
+#Wrapper function for repeating runs with a single set of parameters
 def dorun(N, nepochs, M1, M2, alpha, trainpk, bn):
     print("Starting run with params:\nepochs: ", nepochs, "\nlayers: ", M1, "-", M2, "\nlr: ", alpha, "trainpk: ", trainpk, "\nbn: ", bn)
     
@@ -206,8 +205,14 @@ def dorun(N, nepochs, M1, M2, alpha, trainpk, bn):
     
     print("average accuracy and training time for : \nepochs: ", nepochs, "\nlayers: ", M1, "-", M2, "\nlr: ", alpha, "\nbn: ", bn, ":\n", avaccuracy, avtime)
 
-    
+
+#Execution starts here
+print("Welcome")
 #dorun(N=10, nepochs=100, M1=32, M2=32, alpha=0.1, trainpk=0.5, bn=mybn)
+
+#1 call of dorun does N runs with that param set
+#It's then a simple matter to grep and sort output data to see which param set
+#had the best performance
 dorun(N=10, nepochs=100, M1=32, M2=32, alpha=0.1, trainpk=0.5, bn=nobn)
 
 #dorun(N=10, nepochs=100, M1=320, M2=32, alpha=0.1, trainpk=0.5, bn=mybn)
